@@ -4,15 +4,63 @@ import { MainLayout } from '@/components/layouts/MainLayout';
 import { FileUpload } from '@/components/shared/FileUpload';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
+import { Textarea } from '@/components/ui/textarea';
+import { Label } from '@/components/ui/label';
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Sparkles, Target, TrendingUp, Briefcase, Award, Brain } from 'lucide-react';
 import { uploadResume, saveResume, callAIService, createSession } from '@/db/api';
 import { getSessionId } from '@/lib/session';
+import { extractTextFromFile } from '@/lib/pdfParser';
 import { toast } from 'sonner';
 
 export default function LandingPage() {
   const navigate = useNavigate();
   const [isProcessing, setIsProcessing] = useState(false);
   const [uploadProgress, setUploadProgress] = useState(0);
+  const [resumeText, setResumeText] = useState('');
+
+  const processResumeText = async (text: string, fileName: string, fileUrl?: string) => {
+    try {
+      const sessionId = getSessionId();
+      
+      setUploadProgress(60);
+
+      // Call AI to parse resume
+      const aiResponse = await callAIService({
+        action: 'parse_resume',
+        data: { resumeText: text.substring(0, 10000) }, // Limit text size
+      });
+
+      setUploadProgress(80);
+
+      if (!aiResponse.success || !aiResponse.data) {
+        throw new Error('Failed to parse resume');
+      }
+
+      // Save resume data
+      await saveResume({
+        session_id: sessionId,
+        file_name: fileName,
+        file_url: fileUrl || 'text-input',
+        file_type: fileUrl ? 'application/pdf' : 'text/plain',
+        parsed_data: aiResponse.data,
+        analysis_result: {},
+      });
+
+      setUploadProgress(100);
+      toast.success('Resume uploaded and analyzed successfully!');
+      
+      // Navigate to dashboard
+      setTimeout(() => {
+        navigate('/dashboard');
+      }, 500);
+    } catch (error) {
+      console.error('Error processing resume:', error);
+      toast.error('Failed to process resume. Please try again.');
+      setIsProcessing(false);
+      setUploadProgress(0);
+    }
+  };
 
   const handleFileSelect = async (file: File) => {
     setIsProcessing(true);
@@ -32,54 +80,45 @@ export default function LandingPage() {
       }
       setUploadProgress(40);
 
-      // Extract text from PDF/DOC (simplified - in production, use proper parsing)
-      const reader = new FileReader();
-      reader.onload = async (e) => {
-        try {
-          const text = e.target?.result as string;
-          setUploadProgress(60);
+      // Extract text from file
+      const text = await extractTextFromFile(file);
+      
+      if (!text || text.trim().length < 50) {
+        throw new Error('Could not extract enough text from the file. Please try uploading a PDF or pasting your resume text.');
+      }
 
-          // Call AI to parse resume
-          const aiResponse = await callAIService({
-            action: 'parse_resume',
-            data: { resumeText: text.substring(0, 10000) }, // Limit text size
-          });
-
-          setUploadProgress(80);
-
-          if (!aiResponse.success || !aiResponse.data) {
-            throw new Error('Failed to parse resume');
-          }
-
-          // Save resume data
-          await saveResume({
-            session_id: sessionId,
-            file_name: file.name,
-            file_url: uploadResult.url,
-            file_type: file.type,
-            parsed_data: aiResponse.data,
-            analysis_result: {},
-          });
-
-          setUploadProgress(100);
-          toast.success('Resume uploaded and analyzed successfully!');
-          
-          // Navigate to dashboard
-          setTimeout(() => {
-            navigate('/dashboard');
-          }, 500);
-        } catch (error) {
-          console.error('Error processing resume:', error);
-          toast.error('Failed to process resume. Please try again.');
-          setIsProcessing(false);
-        }
-      };
-
-      reader.readAsText(file);
+      await processResumeText(text, file.name, uploadResult.url);
     } catch (error) {
       console.error('Error uploading resume:', error);
-      toast.error('Failed to upload resume. Please try again.');
+      const errorMessage = error instanceof Error ? error.message : 'Failed to upload resume. Please try again.';
+      toast.error(errorMessage);
       setIsProcessing(false);
+      setUploadProgress(0);
+    }
+  };
+
+  const handleTextSubmit = async () => {
+    if (!resumeText.trim() || resumeText.trim().length < 50) {
+      toast.error('Please enter your resume text (at least 50 characters)');
+      return;
+    }
+
+    setIsProcessing(true);
+    setUploadProgress(10);
+
+    try {
+      const sessionId = getSessionId();
+      
+      // Ensure session exists
+      await createSession(sessionId);
+      setUploadProgress(40);
+
+      await processResumeText(resumeText, 'resume-text.txt');
+    } catch (error) {
+      console.error('Error processing resume text:', error);
+      toast.error('Failed to process resume. Please try again.');
+      setIsProcessing(false);
+      setUploadProgress(0);
     }
   };
 
@@ -133,16 +172,63 @@ export default function LandingPage() {
             </h1>
             
             <p className="text-lg md:text-xl text-muted-foreground max-w-2xl mx-auto">
-              Upload your resume and unlock personalized skill analysis, learning paths, 
-              job opportunities, and career guidance powered by advanced AI.
+              Upload your resume or paste your resume text to unlock personalized skill analysis, 
+              learning paths, job opportunities, and career guidance powered by advanced AI.
             </p>
 
-            <div className="max-w-xl mx-auto">
-              <FileUpload
-                onFileSelect={handleFileSelect}
-                isUploading={isProcessing}
-                uploadProgress={uploadProgress}
-              />
+            <div className="max-w-2xl mx-auto">
+              <Tabs defaultValue="upload" className="w-full">
+                <TabsList className="grid w-full grid-cols-2 mb-6">
+                  <TabsTrigger value="upload">Upload Resume</TabsTrigger>
+                  <TabsTrigger value="paste">Paste Text</TabsTrigger>
+                </TabsList>
+                
+                <TabsContent value="upload" className="space-y-4">
+                  <FileUpload
+                    onFileSelect={handleFileSelect}
+                    isUploading={isProcessing}
+                    uploadProgress={uploadProgress}
+                  />
+                  <p className="text-xs text-muted-foreground text-center">
+                    Supports PDF files (Max 1MB)
+                  </p>
+                </TabsContent>
+                
+                <TabsContent value="paste" className="space-y-4">
+                  <div className="space-y-2">
+                    <Label htmlFor="resumeText" className="text-left block">
+                      Paste Your Resume Text
+                    </Label>
+                    <Textarea
+                      id="resumeText"
+                      placeholder="Paste your complete resume text here including your name, contact info, experience, education, and skills..."
+                      value={resumeText}
+                      onChange={(e) => setResumeText(e.target.value)}
+                      disabled={isProcessing}
+                      rows={10}
+                      className="resize-none"
+                    />
+                  </div>
+                  <Button
+                    onClick={handleTextSubmit}
+                    disabled={isProcessing || !resumeText.trim()}
+                    className="w-full"
+                    size="lg"
+                  >
+                    {isProcessing ? (
+                      <>
+                        <Sparkles className="mr-2 h-5 w-5 animate-spin" />
+                        Analyzing Resume...
+                      </>
+                    ) : (
+                      <>
+                        Analyze Resume
+                        <Sparkles className="ml-2 h-5 w-5" />
+                      </>
+                    )}
+                  </Button>
+                </TabsContent>
+              </Tabs>
             </div>
 
             <div className="flex flex-wrap items-center justify-center gap-4 text-sm text-muted-foreground">
